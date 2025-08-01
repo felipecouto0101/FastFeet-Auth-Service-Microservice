@@ -1,0 +1,98 @@
+service: auth-service
+
+frameworkVersion: '3'
+
+plugins:
+  - serverless-dotenv-plugin
+
+provider:
+  name: aws
+  runtime: nodejs18.x
+  region: ${opt:region, 'us-east-1'}
+  stage: ${opt:stage, 'dev'}
+  environment:
+    JWT_SECRET: ${env:JWT_SECRET}
+    SQS_QUEUE_URL: !Ref AuthEventsQueue
+    DELIVERYMAN_REQUEST_QUEUE_URL: !Ref DeliverymanRequestQueue
+    DELIVERYMAN_RESPONSE_QUEUE_URL: !Ref DeliverymanResponseQueue
+  iamRoleStatements:
+    - Effect: Allow
+      Action:
+        - sqs:SendMessage
+        - sqs:ReceiveMessage
+        - sqs:DeleteMessage
+        - sqs:GetQueueAttributes
+      Resource:
+        - !GetAtt AuthEventsQueue.Arn
+        - !GetAtt DeliverymanRequestQueue.Arn
+        - !GetAtt DeliverymanResponseQueue.Arn
+
+functions:
+  app:
+    handler: dist/main.handler
+    events:
+      - http:
+          path: /{proxy+}
+          method: ANY
+          cors:
+            origin: '*'
+            headers:
+              - Content-Type
+              - X-Amz-Date
+              - Authorization
+              - X-Api-Key
+              - X-Amz-Security-Token
+              - X-Amz-User-Agent
+            allowCredentials: false
+      - http:
+          path: /
+          method: ANY
+          cors:
+            origin: '*'
+            headers:
+              - Content-Type
+              - X-Amz-Date
+              - Authorization
+              - X-Api-Key
+              - X-Amz-Security-Token
+              - X-Amz-User-Agent
+            allowCredentials: false
+
+resources:
+  Resources:
+    AuthEventsQueue:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: ${self:service}-${self:provider.stage}-auth-events
+        VisibilityTimeout: 300
+        MessageRetentionPeriod: 1209600
+
+    DeliverymanRequestQueue:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: ${self:service}-${self:provider.stage}-deliveryman-requests
+        VisibilityTimeout: 300
+        MessageRetentionPeriod: 1209600
+
+    DeliverymanResponseQueue:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: ${self:service}-${self:provider.stage}-deliveryman-responses
+        VisibilityTimeout: 300
+        MessageRetentionPeriod: 1209600
+
+  Outputs:
+    AuthEventsQueueUrl:
+      Value: !Ref AuthEventsQueue
+      Export:
+        Name: ${self:service}-${self:provider.stage}-auth-events-url
+
+    DeliverymanRequestQueueUrl:
+      Value: !Ref DeliverymanRequestQueue
+      Export:
+        Name: ${self:service}-${self:provider.stage}-deliveryman-requests-url
+
+    DeliverymanResponseQueueUrl:
+      Value: !Ref DeliverymanResponseQueue
+      Export:
+        Name: ${self:service}-${self:provider.stage}-deliveryman-responses-url
