@@ -18,6 +18,11 @@ export class SQSService {
   constructor(private readonly configService: ConfigService) {
     this.sqsClient = new SQSClient({
       region: this.configService.get<string>('AWS_REGION') || 'us-east-1',
+      credentials: {
+        accessKeyId: this.configService.get<string>('AWS_ACCESS_KEY_ID') || '',
+        secretAccessKey: this.configService.get<string>('AWS_SECRET_ACCESS_KEY') || '',
+        sessionToken: this.configService.get<string>('AWS_SESSION_TOKEN'),
+      },
     });
     this.queueUrl = this.configService.get<string>('SQS_QUEUE_URL') || '';
   }
