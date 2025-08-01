@@ -1,173 +1,201 @@
-# Auth Service - FastFeet
+# FastFeet - Auth Service Microservice
 
-Authentication microservice for the FastFeet system, responsible for managing login, JWT and communication with other services via SQS.
+## Project Description
 
-## Features
+Authentication microservice for the FastFeet system, responsible for managing deliveryman login, JWT token generation and asynchronous communication with other services via Amazon SQS.
 
-- ✅ Login with CPF and password
+### Features
+- ✅ Authentication with CPF and password
 - ✅ JWT token generation
-- ✅ DynamoDB integration
-- ✅ SQS communication
+- ✅ Asynchronous communication via SQS
 - ✅ Clean Architecture
-- ✅ Data validation
+- ✅ Data validation with class-validator
+- ✅ Serverless deployment on AWS
+- ✅ Automatic documentation with Swagger
 
-## Project Structure
-
+### Architecture
 ```
-src/
-├── core/
-│   ├── domain/
-│   │   ├── entities/
-│   │   ├── repositories/
-│   │   └── services/
-│   └── application/
-│       ├── dtos/
-│       └── use-cases/
-├── infrastructure/
-│   ├── repositories/
-│   ├── services/
-│   └── messaging/
-├── modules/
-├── presentation/
-│   ├── controllers/
-│   ├── guards/
-│   └── strategies/
+┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
+│   Auth Service  │───▶│  SQS Requests   │───▶│Deliveryman Serv.│
+│                 │    │                 │    │                 │
+│                 │◀───│ SQS Responses   │◀───│   DynamoDB      │
+└─────────────────┘    └─────────────────┘    └─────────────────┘
 ```
 
-## Configuration
+## AWS Infrastructure
 
-1. Copy the `.env.example` file to `.env`:
+### Created Resources
+- **AWS Lambda**: Serverless application execution
+- **API Gateway**: Public HTTP endpoints
+- **SQS Queues**: Asynchronous communication between microservices
+  - `auth-service-{stage}-auth-events`
+  - `auth-service-{stage}-deliveryman-requests`
+  - `auth-service-{stage}-deliveryman-responses`
+- **CloudFormation**: Infrastructure as code management
+- **IAM Roles**: Permissions to access AWS resources
+
+### Security Configuration
+- JWT Secret stored in AWS Systems Manager
+- AWS credentials automatically managed by Lambda
+- CORS configured for web requests
+
+## Setup and Installation
+
+### Prerequisites
+- Node.js 18+
+- AWS CLI configured
+- Active AWS account
+
+### 1. Installation
 ```bash
-cp .env.example .env
-```
+git clone <repository-url>
+cd auth-service
 
-2. Configure the environment variables:
-```env
-JWT_SECRET=your-super-secret-jwt-key-here
-AWS_REGION=us-east-1
-AWS_ACCESS_KEY_ID=your-access-key
-AWS_SECRET_ACCESS_KEY=your-secret-key
-DYNAMODB_TABLE_NAME=DeliveryMen
-SQS_QUEUE_URL=https://sqs.us-east-1.amazonaws.com/123456789012/auth-events
-DELIVERYMAN_REQUEST_QUEUE_URL=https://sqs.us-east-1.amazonaws.com/123456789012/deliveryman-requests
-DELIVERYMAN_RESPONSE_QUEUE_URL=https://sqs.us-east-1.amazonaws.com/123456789012/deliveryman-responses
-```
-
-## Installation
-
-```bash
 npm install
 ```
 
-## Running
-
+### 2. Local Configuration
 ```bash
+cp .env.example .env
 
+echo "JWT_SECRET=your-super-secret-jwt-key-here" > .env
+```
+
+### 3. AWS Deployment
+```bash
+aws ssm put-parameter \
+  --name "/auth-service/dev/jwt-secret" \
+  --value "your-super-secret-jwt-key-here" \
+  --type "SecureString"
+
+npm run sls:deploy
+```
+
+### 4. Available Commands
+```bash
 npm run start:dev
 
+npm run build
 
-npm run start:prod
+npm run sls:deploy
+
+npm run sls:remove
+
+npm run sls:logs
+
+npm run test
+npm run test:e2e
+npm run test:cov
 ```
 
 ## API Endpoints
 
+### Base URL
+- **Local**: `http://localhost:3000`
+- **AWS**: `https://{api-id}.execute-api.us-east-1.amazonaws.com/dev`
+
+### Documentation
+- **Swagger UI**: `{base-url}/api`
+
 ### POST /auth/login
-Authenticates a user with CPF and password.
+Authenticates a deliveryman with CPF and password.
 
 **Request:**
 ```json
 {
-  "cpf": "12345678901",
+  "cpf": "123.456.789-01",
   "password": "senha123"
 }
 ```
 
-**Response:**
+**Response (200):**
 ```json
 {
   "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
   "user": {
-    "id": "user-id",
-    "cpf": "12345678901",
-    "name": "User Name",
-    "email": "user@email.com",
+    "id": "uuid",
+    "cpf": "123.456.789-01",
     "role": "deliveryman"
   }
 }
 ```
 
-## Authentication Process
-
-1. **Login**: User sends CPF and password to Auth Service
-2. **Request**: Auth Service sends SQS message to Deliveryman Service
-3. **Search**: Deliveryman Service searches for deliveryman by CPF in DynamoDB
-4. **Response**: Deliveryman Service returns data + password hash via SQS
-5. **Validation**: Auth Service compares password with hash (bcrypt.compare)
-6. **Token**: Auth Service generates JWT if password is valid
-7. **Event**: Sends authentication event via SQS
-8. **Response**: Returns token and user data
-
-## Microservices Communication
-
-### SQS Queues
-
-- **deliveryman-requests**: Auth Service → Deliveryman Service
-- **deliveryman-responses**: Deliveryman Service → Auth Service
-- **auth-events**: Authentication events
-
-### SQS Messages
-
-**Data request (Auth → Deliveryman):**
+**Response (401):**
 ```json
 {
-  "cpf": "12345678901",
-  "requestId": "uuid-v4"
+  "message": "Invalid credentials",
+  "error": "Unauthorized",
+  "statusCode": 401
 }
 ```
 
-**Data response (Deliveryman → Auth):**
+### Validations
+- **CPF**: Required format `123.456.789-01` (11 digits with formatting)
+- **Password**: Required string, not empty
+
+## Microservices Communication
+
+### Authentication Flow
+1. **Frontend** → `POST /auth/login` → **Auth Service**
+2. **Auth Service** → SQS Request → **Deliveryman Service**
+3. **Deliveryman Service** → Database search → SQS Response → **Auth Service**
+4. **Auth Service** → Password validation → Generate JWT → **Frontend**
+5. **Auth Service** → Send event → **SQS Events**
+
+### SQS Messages
+
+#### Request (Auth → Deliveryman)
+```json
+{
+  "action": "FIND_DELIVERYMAN_BY_CPF",
+  "requestId": "uuid-v4",
+  "cpf": "123.456.789-01"
+}
+```
+
+#### Response (Deliveryman → Auth)
 ```json
 {
   "requestId": "uuid-v4",
-  "deliveryman": {
-    "id": "string",
-    "cpf": "string",
-    "name": "string",
-    "email": "string",
-    "password": "string",  
-    "isActive": "boolean"
+  "success": true,
+  "data": {
+    "id": "uuid",
+    "name": "Deliveryman Name",
+    "email": "email@example.com",
+    "cpf": "123.456.789-01",
+    "password": "$2b$10$hash...",
+    "phone": "(11) 99999-9999",
+    "isActive": true,
+    "createdAt": "2024-01-01T00:00:00.000Z",
+    "updatedAt": "2024-01-01T00:00:00.000Z"
   }
 }
 ```
 
-## SQS Events
-
-The service sends events to SQS when:
-
-- User logs in (`USER_AUTHENTICATED`)
-- User is created (`USER_CREATED`)
-- User is updated (`USER_UPDATED`)
-
-**Event format:**
+#### Authentication Events
 ```json
 {
   "eventType": "USER_AUTHENTICATED",
-  "userId": "user-id",
-  "cpf": "12345678901",
+  "userId": "uuid",
+  "cpf": "123.456.789-01",
   "role": "deliveryman",
   "timestamp": "2024-01-01T00:00:00.000Z"
 }
 ```
 
-## Tests
+### SQS Queues
+- **auth-service-{stage}-deliveryman-requests**: Data requests
+- **auth-service-{stage}-deliveryman-responses**: Data responses
+- **auth-service-{stage}-auth-events**: Authentication events
 
-```bash
+### Timeout and Retry
+- **Timeout**: 30 seconds for Deliveryman Service response
+- **Retry**: Automatic via SQS (Dead Letter Queue configurable)
 
-npm run test
+## License
 
+This project is licensed under the [MIT License](LICENSE).
 
-npm run test:e2e
+---
 
-
-npm run test:cov
-```
+**Developed for the FastFeet system** 🚀
