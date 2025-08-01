@@ -16,18 +16,22 @@ export class AuthenticateUserUseCase {
   ) {}
 
   async execute(loginDto: LoginDto): Promise<AuthResponseDto> {
+    console.log('Login attempt for CPF:', loginDto.cpf);
     const requestId = uuidv4();
     
-    
+    console.log('Sending request to deliveryman service with requestId:', requestId);
     await this.deliverymanMessaging.requestDeliverymanData({
       cpf: loginDto.cpf,
       requestId,
     });
 
+    console.log('Waiting for deliveryman response...');
+    const response = await this.deliverymanMessaging.waitForDeliverymanResponse(requestId, 30000); 
     
-    const response = await this.deliverymanMessaging.waitForDeliverymanResponse(requestId);
+    console.log('Deliveryman response received:', JSON.stringify(response, null, 2));
     
     if (!response || response.error || !response.deliveryman) {
+      console.log('No valid response from deliveryman service');
       throw new UnauthorizedException('Invalid credentials');
     }
 
@@ -37,7 +41,12 @@ export class AuthenticateUserUseCase {
       throw new UnauthorizedException('Invalid credentials');
     }
 
-    
+    if (!deliveryman.password) {
+      console.log('Password field missing from deliveryman data');
+      throw new UnauthorizedException('Invalid credentials');
+    }
+
+    console.log('Comparing password with hash');
     const isPasswordValid = await this.passwordService.compare(
       loginDto.password,
       deliveryman.password,
