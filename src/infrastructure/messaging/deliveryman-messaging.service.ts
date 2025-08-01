@@ -12,30 +12,33 @@ export class DeliverymanMessagingService {
 
   constructor(private readonly configService: ConfigService) {
     this.sqsClient = new SQSClient({
-      region: this.configService.get<string>('AWS_REGION') || 'us-east-1',
-      credentials: {
-        accessKeyId: this.configService.get<string>('AWS_ACCESS_KEY_ID') || '',
-        secretAccessKey: this.configService.get<string>('AWS_SECRET_ACCESS_KEY') || '',
-        sessionToken: this.configService.get<string>('AWS_SESSION_TOKEN'),
-      },
+      region: 'us-east-1',
     });
     this.requestQueueUrl = this.configService.get<string>('DELIVERYMAN_REQUEST_QUEUE_URL') || '';
     this.responseQueueUrl = this.configService.get<string>('DELIVERYMAN_RESPONSE_QUEUE_URL') || '';
+    
+    console.log('Request Queue URL:', this.requestQueueUrl);
+    console.log('Response Queue URL:', this.responseQueueUrl);
   }
 
   async requestDeliverymanData(request: DeliverymanRequestDto): Promise<void> {
+    console.log('Sending message to queue:', this.requestQueueUrl);
+    
+    const message = {
+      action: 'FIND_DELIVERYMAN_BY_CPF',
+      requestId: request.requestId,
+      cpf: request.cpf
+    };
+    
+    console.log('Message body:', JSON.stringify(message));
+    
     const command = new SendMessageCommand({
       QueueUrl: this.requestQueueUrl,
-      MessageBody: JSON.stringify(request),
-      MessageAttributes: {
-        messageType: {
-          DataType: 'String',
-          StringValue: 'DELIVERYMAN_REQUEST',
-        },
-      },
+      MessageBody: JSON.stringify(message),
     });
 
-    await this.sqsClient.send(command);
+    const result = await this.sqsClient.send(command);
+    console.log('Message sent successfully:', result.MessageId);
   }
 
   async waitForDeliverymanResponse(requestId: string, timeoutMs: number = 10000): Promise<DeliverymanResponseDto | null> {
@@ -53,16 +56,27 @@ export class DeliverymanMessagingService {
       
       if (result.Messages) {
         for (const message of result.Messages) {
-          const response: DeliverymanResponseDto = JSON.parse(message.Body || '{}');
+          const response = JSON.parse(message.Body || '{}');
+          console.log('Received response:', response);
           
           if (response.requestId === requestId) {
-            
             await this.sqsClient.send(new DeleteMessageCommand({
               QueueUrl: this.responseQueueUrl,
               ReceiptHandle: message.ReceiptHandle,
             }));
             
-            return response;
+           
+            if (response.success && response.data) {
+              return {
+                requestId: response.requestId,
+                deliveryman: response.data
+              };
+            } else {
+              return {
+                requestId: response.requestId,
+                error: 'Deliveryman not found'
+              };
+            }
           }
         }
       }
