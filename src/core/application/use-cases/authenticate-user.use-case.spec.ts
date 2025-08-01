@@ -1,40 +1,25 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { JwtService } from '@nestjs/jwt';
 import { UnauthorizedException } from '@nestjs/common';
 import { AuthenticateUserUseCase } from './authenticate-user.use-case';
-import { UserRepository } from '../../domain/repositories/user.repository';
 import { PasswordService } from '../../domain/services/password.service';
 import { SQSService } from '../../../infrastructure/messaging/sqs.service';
-import { User, UserRole } from '../../domain/entities/user.entity';
+import { DeliverymanMessagingService } from '../../../infrastructure/messaging/deliveryman-messaging.service';
 import { LoginDto } from '../dtos/login.dto';
 
 describe('AuthenticateUserUseCase', () => {
   let useCase: AuthenticateUserUseCase;
-  let userRepository: jest.Mocked<UserRepository>;
   let passwordService: jest.Mocked<PasswordService>;
-  let jwtService: jest.Mocked<JwtService>;
   let sqsService: jest.Mocked<SQSService>;
+  let deliverymanMessaging: jest.Mocked<DeliverymanMessagingService>;
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         AuthenticateUserUseCase,
         {
-          provide: UserRepository,
-          useValue: {
-            findByCpf: jest.fn(),
-          },
-        },
-        {
           provide: PasswordService,
           useValue: {
             compare: jest.fn(),
-          },
-        },
-        {
-          provide: JwtService,
-          useValue: {
-            sign: jest.fn(),
           },
         },
         {
@@ -43,14 +28,20 @@ describe('AuthenticateUserUseCase', () => {
             sendAuthEvent: jest.fn(),
           },
         },
+        {
+          provide: DeliverymanMessagingService,
+          useValue: {
+            requestDeliverymanData: jest.fn(),
+            waitForDeliverymanResponse: jest.fn(),
+          },
+        },
       ],
     }).compile();
 
     useCase = module.get<AuthenticateUserUseCase>(AuthenticateUserUseCase);
-    userRepository = module.get(UserRepository);
     passwordService = module.get(PasswordService);
-    jwtService = module.get(JwtService);
     sqsService = module.get(SQSService);
+    deliverymanMessaging = module.get(DeliverymanMessagingService);
   });
 
   it('should authenticate user successfully', async () => {
@@ -59,30 +50,33 @@ describe('AuthenticateUserUseCase', () => {
       password: 'password123',
     };
 
-    const user = new User(
-      'user-id',
-      '12345678901',
-      'Test User',
-      'test@email.com',
-      'hashedPassword',
-      UserRole.DELIVERYMAN,
-    );
+    const deliverymanResponse = {
+      requestId: 'test-request-id',
+      deliveryman: {
+        id: 'user-id',
+        cpf: '12345678901',
+        name: 'Test User',
+        email: 'test@email.com',
+        password: 'hashedPassword',
+        isActive: true,
+      },
+    };
 
-    userRepository.findByCpf.mockResolvedValue(user);
+    deliverymanMessaging.requestDeliverymanData.mockResolvedValue();
+    deliverymanMessaging.waitForDeliverymanResponse.mockResolvedValue(deliverymanResponse);
     passwordService.compare.mockResolvedValue(true);
-    jwtService.sign.mockReturnValue('jwt-token');
     sqsService.sendAuthEvent.mockResolvedValue();
 
     const result = await useCase.execute(loginDto);
 
     expect(result).toEqual({
-      access_token: 'jwt-token',
+      access_token: expect.any(String),
       user: {
         id: 'user-id',
         cpf: '12345678901',
         name: 'Test User',
         email: 'test@email.com',
-        role: UserRole.DELIVERYMAN,
+        role: 'deliveryman',
       },
     });
 
@@ -90,18 +84,19 @@ describe('AuthenticateUserUseCase', () => {
       eventType: 'USER_AUTHENTICATED',
       userId: 'user-id',
       cpf: '12345678901',
-      role: UserRole.DELIVERYMAN,
+      role: 'deliveryman',
       timestamp: expect.any(String),
     });
   });
 
-  it('should throw UnauthorizedException when user not found', async () => {
+  it('should throw UnauthorizedException when deliveryman not found', async () => {
     const loginDto: LoginDto = {
       cpf: '12345678901',
       password: 'password123',
     };
 
-    userRepository.findByCpf.mockResolvedValue(null);
+    deliverymanMessaging.requestDeliverymanData.mockResolvedValue();
+    deliverymanMessaging.waitForDeliverymanResponse.mockResolvedValue(null);
 
     await expect(useCase.execute(loginDto)).rejects.toThrow(
       UnauthorizedException,
@@ -114,16 +109,20 @@ describe('AuthenticateUserUseCase', () => {
       password: 'wrongpassword',
     };
 
-    const user = new User(
-      'user-id',
-      '12345678901',
-      'Test User',
-      'test@email.com',
-      'hashedPassword',
-      UserRole.DELIVERYMAN,
-    );
+    const deliverymanResponse = {
+      requestId: 'test-request-id',
+      deliveryman: {
+        id: 'user-id',
+        cpf: '12345678901',
+        name: 'Test User',
+        email: 'test@email.com',
+        password: 'hashedPassword',
+        isActive: true,
+      },
+    };
 
-    userRepository.findByCpf.mockResolvedValue(user);
+    deliverymanMessaging.requestDeliverymanData.mockResolvedValue();
+    deliverymanMessaging.waitForDeliverymanResponse.mockResolvedValue(deliverymanResponse);
     passwordService.compare.mockResolvedValue(false);
 
     await expect(useCase.execute(loginDto)).rejects.toThrow(
