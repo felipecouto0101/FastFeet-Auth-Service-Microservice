@@ -1,61 +1,77 @@
-import { Injectable, UnauthorizedException } from '@nestjs/common';
-import { UserRepository } from '../../domain/repositories/user.repository';
+import { Injectable, UnauthorizedException, Logger } from '@nestjs/common';
 import { PasswordService } from '../../domain/services/password.service';
 import { LoginDto } from '../dtos/login.dto';
 import { AuthResponseDto } from '../dtos/auth-response.dto';
 import { SQSService } from '../../../infrastructure/messaging/sqs.service';
+import { DeliverymanMessagingService } from '../../../infrastructure/messaging/deliveryman-messaging.service';
 import * as jwt from 'jsonwebtoken';
+import { v4 as uuidv4 } from 'uuid';
 
 @Injectable()
 export class AuthenticateUserUseCase {
   constructor(
-    private readonly userRepository: UserRepository,
     private readonly passwordService: PasswordService,
     private readonly sqsService: SQSService,
+    private readonly deliverymanMessaging: DeliverymanMessagingService,
   ) {}
 
   async execute(loginDto: LoginDto): Promise<AuthResponseDto> {
-    const user = await this.userRepository.findByCpf(loginDto.cpf);
+    const requestId = uuidv4();
     
-    if (!user || !user.isActive) {
-      throw new UnauthorizedException('Credenciais inválidas');
+    
+    await this.deliverymanMessaging.requestDeliverymanData({
+      cpf: loginDto.cpf,
+      requestId,
+    });
+
+    
+    const response = await this.deliverymanMessaging.waitForDeliverymanResponse(requestId);
+    
+    if (!response || response.error || !response.deliveryman) {
+      throw new UnauthorizedException('Invalid credentials');
     }
 
+    const { deliveryman } = response;
+    
+    if (!deliveryman.isActive) {
+      throw new UnauthorizedException('Invalid credentials');
+    }
+
+    
     const isPasswordValid = await this.passwordService.compare(
       loginDto.password,
-      user.password,
+      deliveryman.password,
     );
 
     if (!isPasswordValid) {
-      throw new UnauthorizedException('Credenciais inválidas');
+      throw new UnauthorizedException('Invalid credentials');
     }
 
+    
     const payload = {
-      sub: user.id,
-      cpf: user.cpf,
-      role: user.role,
+      sub: deliveryman.id,
+      cpf: deliveryman.cpf,
+      role: 'deliveryman',
     };
 
     const secret = process.env.JWT_SECRET || 'default-secret';
     const access_token = jwt.sign(payload, secret, { expiresIn: '24h' });
 
-    // Enviar evento de autenticação para SQS
+    
     await this.sqsService.sendAuthEvent({
       eventType: 'USER_AUTHENTICATED',
-      userId: user.id,
-      cpf: user.cpf,
-      role: user.role,
+      userId: deliveryman.id,
+      cpf: deliveryman.cpf,
+      role: 'deliveryman',
       timestamp: new Date().toISOString(),
     });
 
     return {
       access_token,
       user: {
-        id: user.id,
-        cpf: user.cpf,
-        name: user.name,
-        email: user.email,
-        role: user.role,
+        id: deliveryman.id,
+        cpf: deliveryman.cpf,
+        role: 'deliveryman',
       },
     };
   }
