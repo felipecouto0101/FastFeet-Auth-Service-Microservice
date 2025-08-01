@@ -7,6 +7,13 @@ async function bootstrap() {
   const app = await NestFactory.create(AppModule);
   const logger = new Logger('Bootstrap');
   
+  app.enableCors({
+    origin: '*',
+    methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
+    allowedHeaders: 'Content-Type,Accept,Authorization,X-Requested-With',
+    credentials: false,
+  });
+  
   const config = new DocumentBuilder()
     .setTitle('Auth Service - FastFeet')
     .setDescription('Authentication microservice for the FastFeet system')
@@ -23,4 +30,8 @@ async function bootstrap() {
   logger.log(`🚀 Auth Service is running on port ${port}`);
   logger.log(`📚 Swagger documentation available at: http://localhost:${port}/api`);
 }
-bootstrap();
+if (require.main === module) {
+  bootstrap();
+}
+
+export { handler } from './lambda';
