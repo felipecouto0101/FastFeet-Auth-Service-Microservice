@@ -4,15 +4,23 @@ import { AuthenticateUserUseCase } from './authenticate-user.use-case';
 import { PasswordService } from '../../domain/services/password.service';
 import { SQSService } from '../../../infrastructure/messaging/sqs.service';
 import { DeliverymanMessagingService } from '../../../infrastructure/messaging/deliveryman-messaging.service';
-import { LoginDto } from '../dtos/login.dto';
+import * as jwt from 'jsonwebtoken';
+
+jest.mock('jsonwebtoken');
+jest.mock('uuid', () => ({
+  v4: jest.fn(() => 'test-uuid'),
+}));
 
 describe('AuthenticateUserUseCase', () => {
   let useCase: AuthenticateUserUseCase;
   let passwordService: jest.Mocked<PasswordService>;
   let sqsService: jest.Mocked<SQSService>;
   let deliverymanMessaging: jest.Mocked<DeliverymanMessagingService>;
+  let mockJwt: jest.Mocked<typeof jwt>;
 
   beforeEach(async () => {
+    mockJwt = jwt as jest.Mocked<typeof jwt>;
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         AuthenticateUserUseCase,
@@ -42,91 +50,184 @@ describe('AuthenticateUserUseCase', () => {
     passwordService = module.get(PasswordService);
     sqsService = module.get(SQSService);
     deliverymanMessaging = module.get(DeliverymanMessagingService);
+
+   
+    process.env.JWT_SECRET = 'test-secret';
   });
 
-  it('should authenticate user successfully', async () => {
-    const loginDto: LoginDto = {
-      cpf: '12345678901',
-      password: 'password123',
+  afterEach(() => {
+    jest.clearAllMocks();
+    delete process.env.JWT_SECRET;
+  });
+
+  describe('execute', () => {
+    const loginDto = {
+      cpf: '123.456.789-01',
+      password: 'testPassword123',
     };
 
-    const deliverymanResponse = {
-      requestId: 'test-request-id',
+    const mockDeliverymanResponse = {
+      requestId: 'test-uuid',
       deliveryman: {
         id: 'user-id',
-        cpf: '12345678901',
         name: 'Test User',
-        email: 'test@email.com',
-        password: 'hashedPassword',
+        email: 'test@example.com',
+        cpf: '123.456.789-01',
+        password: '$2b$10$hashedPassword',
+        phone: '(11) 99999-9999',
         isActive: true,
+        createdAt: '2024-01-01T00:00:00.000Z',
+        updatedAt: '2024-01-01T00:00:00.000Z',
       },
     };
 
-    deliverymanMessaging.requestDeliverymanData.mockResolvedValue();
-    deliverymanMessaging.waitForDeliverymanResponse.mockResolvedValue(deliverymanResponse);
-    passwordService.compare.mockResolvedValue(true);
-    sqsService.sendAuthEvent.mockResolvedValue();
+    it('should authenticate user successfully', async () => {
+      const mockToken = 'mock-jwt-token';
 
-    const result = await useCase.execute(loginDto);
+      deliverymanMessaging.requestDeliverymanData.mockResolvedValue();
+      deliverymanMessaging.waitForDeliverymanResponse.mockResolvedValue(mockDeliverymanResponse);
+      passwordService.compare.mockResolvedValue(true);
+      mockJwt.sign.mockReturnValue(mockToken as any);
+      sqsService.sendAuthEvent.mockResolvedValue();
 
-    expect(result).toEqual({
-      access_token: expect.any(String),
-      user: {
-        id: 'user-id',
-        cpf: '12345678901',
-        name: 'Test User',
-        email: 'test@email.com',
+      const result = await useCase.execute(loginDto);
+
+      expect(deliverymanMessaging.requestDeliverymanData).toHaveBeenCalledWith({
+        cpf: loginDto.cpf,
+        requestId: 'test-uuid',
+      });
+
+      expect(deliverymanMessaging.waitForDeliverymanResponse).toHaveBeenCalledWith('test-uuid', 30000);
+
+      expect(passwordService.compare).toHaveBeenCalledWith(
+        loginDto.password,
+        mockDeliverymanResponse.deliveryman.password
+      );
+
+      expect(mockJwt.sign).toHaveBeenCalledWith(
+        {
+          sub: mockDeliverymanResponse.deliveryman.id,
+          cpf: mockDeliverymanResponse.deliveryman.cpf,
+          role: 'deliveryman',
+        },
+        'test-secret',
+        { expiresIn: '24h' }
+      );
+
+      expect(sqsService.sendAuthEvent).toHaveBeenCalledWith({
+        eventType: 'USER_AUTHENTICATED',
+        userId: mockDeliverymanResponse.deliveryman.id,
+        cpf: mockDeliverymanResponse.deliveryman.cpf,
         role: 'deliveryman',
-      },
+        timestamp: expect.any(String),
+      });
+
+      expect(result).toEqual({
+        access_token: mockToken,
+        user: {
+          id: mockDeliverymanResponse.deliveryman.id,
+          cpf: mockDeliverymanResponse.deliveryman.cpf,
+          role: 'deliveryman',
+        },
+      });
     });
 
-    expect(sqsService.sendAuthEvent).toHaveBeenCalledWith({
-      eventType: 'USER_AUTHENTICATED',
-      userId: 'user-id',
-      cpf: '12345678901',
-      role: 'deliveryman',
-      timestamp: expect.any(String),
+    it('should throw UnauthorizedException when no response from deliveryman service', async () => {
+      deliverymanMessaging.requestDeliverymanData.mockResolvedValue();
+      deliverymanMessaging.waitForDeliverymanResponse.mockResolvedValue(null);
+
+      await expect(useCase.execute(loginDto)).rejects.toThrow(UnauthorizedException);
+      await expect(useCase.execute(loginDto)).rejects.toThrow('Invalid credentials');
     });
-  });
 
-  it('should throw UnauthorizedException when deliveryman not found', async () => {
-    const loginDto: LoginDto = {
-      cpf: '12345678901',
-      password: 'password123',
-    };
+    it('should throw UnauthorizedException when response has error', async () => {
+      const errorResponse = {
+        requestId: 'test-uuid',
+        error: 'Deliveryman not found',
+      };
 
-    deliverymanMessaging.requestDeliverymanData.mockResolvedValue();
-    deliverymanMessaging.waitForDeliverymanResponse.mockResolvedValue(null);
+      deliverymanMessaging.requestDeliverymanData.mockResolvedValue();
+      deliverymanMessaging.waitForDeliverymanResponse.mockResolvedValue(errorResponse as any);
 
-    await expect(useCase.execute(loginDto)).rejects.toThrow(
-      UnauthorizedException,
-    );
-  });
+      await expect(useCase.execute(loginDto)).rejects.toThrow(UnauthorizedException);
+      await expect(useCase.execute(loginDto)).rejects.toThrow('Invalid credentials');
+    });
 
-  it('should throw UnauthorizedException when password is invalid', async () => {
-    const loginDto: LoginDto = {
-      cpf: '12345678901',
-      password: 'wrongpassword',
-    };
+    it('should throw UnauthorizedException when deliveryman is not active', async () => {
+      const inactiveDeliverymanResponse = {
+        ...mockDeliverymanResponse,
+        deliveryman: {
+          ...mockDeliverymanResponse.deliveryman,
+          isActive: false,
+        },
+      };
 
-    const deliverymanResponse = {
-      requestId: 'test-request-id',
-      deliveryman: {
-        id: 'user-id',
-        cpf: '12345678901',
-        name: 'Test User',
-        email: 'test@email.com',
-        password: 'hashedPassword',
-        isActive: true,
-      },
-    };
+      deliverymanMessaging.requestDeliverymanData.mockResolvedValue();
+      deliverymanMessaging.waitForDeliverymanResponse.mockResolvedValue(inactiveDeliverymanResponse);
 
-    deliverymanMessaging.requestDeliverymanData.mockResolvedValue();
-    deliverymanMessaging.waitForDeliverymanResponse.mockResolvedValue(deliverymanResponse);
-    passwordService.compare.mockResolvedValue(false);
+      await expect(useCase.execute(loginDto)).rejects.toThrow(UnauthorizedException);
+      await expect(useCase.execute(loginDto)).rejects.toThrow('Invalid credentials');
+    });
 
-    await expect(useCase.execute(loginDto)).rejects.toThrow(
-      UnauthorizedException,
-    );
+    it('should throw UnauthorizedException when password field is missing', async () => {
+      const responseWithoutPassword = {
+        ...mockDeliverymanResponse,
+        deliveryman: {
+          ...mockDeliverymanResponse.deliveryman,
+          password: undefined,
+        },
+      };
+
+      deliverymanMessaging.requestDeliverymanData.mockResolvedValue();
+      deliverymanMessaging.waitForDeliverymanResponse.mockResolvedValue(responseWithoutPassword as any);
+
+      await expect(useCase.execute(loginDto)).rejects.toThrow(UnauthorizedException);
+      await expect(useCase.execute(loginDto)).rejects.toThrow('Invalid credentials');
+    });
+
+    it('should throw UnauthorizedException when password is invalid', async () => {
+      deliverymanMessaging.requestDeliverymanData.mockResolvedValue();
+      deliverymanMessaging.waitForDeliverymanResponse.mockResolvedValue(mockDeliverymanResponse);
+      passwordService.compare.mockResolvedValue(false);
+
+      await expect(useCase.execute(loginDto)).rejects.toThrow(UnauthorizedException);
+      await expect(useCase.execute(loginDto)).rejects.toThrow('Invalid credentials');
+    });
+
+    it('should use default JWT secret when environment variable is not set', async () => {
+      delete process.env.JWT_SECRET;
+      const mockToken = 'mock-jwt-token';
+
+      deliverymanMessaging.requestDeliverymanData.mockResolvedValue();
+      deliverymanMessaging.waitForDeliverymanResponse.mockResolvedValue(mockDeliverymanResponse);
+      passwordService.compare.mockResolvedValue(true);
+      mockJwt.sign.mockReturnValue(mockToken as any);
+      sqsService.sendAuthEvent.mockResolvedValue();
+
+      await useCase.execute(loginDto);
+
+      expect(mockJwt.sign).toHaveBeenCalledWith(
+        expect.any(Object),
+        'default-secret',
+        { expiresIn: '24h' }
+      );
+    });
+
+    it('should handle error when requesting deliveryman data fails', async () => {
+      const error = new Error('SQS Error');
+      deliverymanMessaging.requestDeliverymanData.mockRejectedValue(error);
+
+      await expect(useCase.execute(loginDto)).rejects.toThrow('SQS Error');
+    });
+
+    it('should handle error when password comparison fails', async () => {
+      const error = new Error('Password comparison failed');
+
+      deliverymanMessaging.requestDeliverymanData.mockResolvedValue();
+      deliverymanMessaging.waitForDeliverymanResponse.mockResolvedValue(mockDeliverymanResponse);
+      passwordService.compare.mockRejectedValue(error);
+
+      await expect(useCase.execute(loginDto)).rejects.toThrow('Password comparison failed');
+    });
   });
 });
